@@ -1,21 +1,12 @@
-import { Heading, IllustratedMessage, Item, TabList, TabPanels, Tabs, View } from '@geti-ui/ui';
+import { Item, TabList, TabPanels, Tabs, View } from '@geti-ui/ui';
 
 import { SchemaModel } from '../../../api/openapi-spec';
 import { MetricsContent } from '../metrics/metrics';
 import { ModelDetails } from '../model-details/model-details';
 import { ModelFormats } from '../model-formats/model-formats';
-import { ReactComponent as EmptyIllustration } from './../../../assets/illustration.svg';
+import { ComingSoon } from '../shared/coming-soon';
 
 import classes from './model-row-content.module.css';
-
-const ComingSoon = () => {
-    return (
-        <IllustratedMessage marginY='size-400'>
-            <EmptyIllustration height='250px' />
-            <Heading>Coming soon</Heading>
-        </IllustratedMessage>
-    );
-};
 
 interface ModelRowContentProps {
     model: SchemaModel;
@@ -25,7 +16,7 @@ export const ModelRowContent = ({ model }: ModelRowContentProps) => {
     return (
         <View UNSAFE_className={classes.modelRowContent}>
             <Tabs>
-                <TabList>
+                <TabList marginBottom={'size-200'}>
                     <Item key='model_formats'>Model formats</Item>
                     <Item key='metrics'>Model Metrics</Item>
                     <Item key='datasets'>Training Datasets</Item>

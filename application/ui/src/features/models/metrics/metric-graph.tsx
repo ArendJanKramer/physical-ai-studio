@@ -1,7 +1,7 @@
 import { useId } from 'react';
 
 import { Flex, View } from '@geti-ui/ui';
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, XAxis, YAxis } from 'recharts';
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import { Box } from '../shared/box';
 
@@ -15,16 +15,30 @@ type MetricGraphProps = {
     data?: MetricGraphPoint[];
     xAxisLabel?: string;
     yAxisLabel: string;
+    color?: string;
 };
 
 const X_AXIS_TICK_COUNT = 8;
 const Y_AXIS_TICK_COUNT = 4;
 
-export const MetricGraph = ({ title, data, xAxisLabel, yAxisLabel }: MetricGraphProps) => {
+export const MetricGraph = ({
+    title,
+    data,
+    xAxisLabel,
+    yAxisLabel,
+    color = 'var(--energy-blue)',
+}: MetricGraphProps) => {
     const gradientId = useId();
 
     return (
-        <Flex flex={1} direction={'column'} minWidth={'size-5000'}>
+        <Flex
+            flex={1}
+            direction={'column'}
+            minWidth={'size-5000'}
+            UNSAFE_style={{
+                '--metric-graph-color': color,
+            }}
+        >
             <Box
                 title={title}
                 content={
@@ -33,19 +47,19 @@ export const MetricGraph = ({ title, data, xAxisLabel, yAxisLabel }: MetricGraph
                             <AreaChart
                                 style={{ aspectRatio: 1.6 }}
                                 data={data}
-                                margin={{ top: 35, bottom: 35, left: 35 }}
+                                margin={{ top: 35, bottom: 35, left: 35, right: 35 }}
                             >
                                 <defs>
                                     <linearGradient id={gradientId} x1='0' y1='0' x2='0' y2='1'>
-                                        <stop offset='5%' stopColor='var(--energy-blue)' stopOpacity={0.3} />
-                                        <stop offset='95%' stopColor='var(--energy-blue)' stopOpacity={0} />
+                                        <stop offset='5%' stopColor='var(--metric-graph-color)' stopOpacity={0.3} />
+                                        <stop offset='95%' stopColor='var(--metric-graph-color)' stopOpacity={0} />
                                     </linearGradient>
                                 </defs>
                                 <CartesianGrid />
                                 <XAxis
                                     dataKey='x'
                                     type='number'
-                                    domain={['dataMin', 'dataMax']}
+                                    domain={[0, 'dataMax']}
                                     label={{ value: xAxisLabel ?? 'x', position: 'bottom', fill: '#666', offset: 12 }}
                                     tickCount={X_AXIS_TICK_COUNT}
                                     tickMargin={12}
@@ -60,11 +74,21 @@ export const MetricGraph = ({ title, data, xAxisLabel, yAxisLabel }: MetricGraph
                                     type='linear'
                                     dataKey='y'
                                     name={yAxisLabel}
-                                    stroke='var(--energy-blue)'
+                                    stroke='var(--metric-graph-color)'
                                     strokeWidth={2}
                                     fill={`url(#${gradientId})`}
                                     dot={false}
-                                    isAnimationActive={false}
+                                />
+                                <Tooltip
+                                    labelFormatter={(label) => `${xAxisLabel}: ${label}`}
+                                    cursor={{
+                                        stroke: 'var(--metric-graph-color)',
+                                    }}
+                                    contentStyle={{
+                                        backgroundColor: 'var(--spectrum-global-color-gray-50)',
+                                        borderColor: 'var(--color-border-2)',
+                                        borderRadius: 'var(--spectrum-alias-border-radius-regular)',
+                                    }}
                                 />
                             </AreaChart>
                         </ResponsiveContainer>
