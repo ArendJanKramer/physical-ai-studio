@@ -1,4 +1,4 @@
-import { Dispatch, SetStateAction, useState } from 'react';
+import { Dispatch, SetStateAction, useCallback, useEffect, useRef, useState } from 'react';
 
 import { ActionButton, Flex, Grid, Heading, minmax, repeat, Slider, Switch, View } from '@geti-ui/ui';
 import { ChevronDownSmallLight } from '@geti-ui/ui/icons';
@@ -77,12 +77,18 @@ const useModelJoints = (): JointsState => {
 };
 
 // Combine the joint range of the urdf model with actual joint state from robot
-const useRobotJointsState = (): { joints: JointsState; error: string | null; errorCode: string | null } => {
+const useRobotJointsState = (): {
+    joints: JointsState;
+    error: string | null;
+    errorCode: string | null;
+    disconnect: () => void;
+    restart: () => void;
+} => {
     const robot = useRobot();
     const modelJoints = useModelJoints();
 
     const { project_id, robot_id } = useRobotId();
-    const { joints, error, errorCode } = useJointState(project_id, robot_id);
+    const { joints, error, errorCode, disconnect, restart } = useJointState(project_id, robot_id);
     useSynchronizeModelJoints(joints, robot.type);
 
     return {
@@ -95,11 +101,24 @@ const useRobotJointsState = (): { joints: JointsState; error: string | null; err
         }),
         error,
         errorCode,
+        disconnect,
+        restart,
     };
 };
 
-const EnabledJointControls = ({ isExpanded }: { isExpanded: boolean }) => {
-    const { joints, error, errorCode } = useRobotJointsState();
+const EnabledJointControls = ({
+    isExpanded,
+    onSessionReady,
+}: {
+    isExpanded: boolean;
+    onSessionReady: (session: { disconnect: () => void; restart: () => void } | null) => void;
+}) => {
+    const { joints, error, errorCode, disconnect, restart } = useRobotJointsState();
+
+    useEffect(() => {
+        onSessionReady({ disconnect, restart });
+        return () => onSessionReady(null);
+    }, [disconnect, restart, onSessionReady]);
 
     if (error) {
         return (
@@ -136,6 +155,17 @@ export const JointControls = ({
     setIsConnected: Dispatch<SetStateAction<boolean>>;
 }) => {
     const [isExpanded, setIsExpanded] = useState(true);
+    const sessionRef = useRef<{ disconnect: () => void; restart: () => void } | null>(null);
+    const onSessionReady = useCallback((session: { disconnect: () => void; restart: () => void } | null) => {
+        sessionRef.current = session;
+    }, []);
+
+    const onConnectChange = (connected: boolean) => {
+        if (!connected) {
+            sessionRef.current?.disconnect();
+        }
+        setIsConnected(connected);
+    };
 
     return (
         <View
@@ -166,12 +196,17 @@ export const JointControls = ({
                         </Heading>
                     </ActionButton>
 
-                    <Switch isSelected={isConnected} onChange={setIsConnected}>
-                        Connect
-                    </Switch>
+                    <Flex alignItems='center' gap='size-150'>
+                        {isConnected && (
+                            <ActionButton onPress={() => sessionRef.current?.restart()}>Restart session</ActionButton>
+                        )}
+                        <Switch isSelected={isConnected} onChange={onConnectChange}>
+                            Connect
+                        </Switch>
+                    </Flex>
                 </Flex>
                 {isConnected ? (
-                    <EnabledJointControls isExpanded={isExpanded} />
+                    <EnabledJointControls isExpanded={isExpanded} onSessionReady={onSessionReady} />
                 ) : (
                     <DisabledJointsControls isExpanded={isExpanded} />
                 )}
