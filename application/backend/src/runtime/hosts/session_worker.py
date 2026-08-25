@@ -20,7 +20,7 @@ from loguru import logger
 from core.logging import setup_logging
 from exceptions import BaseException as AppBaseException
 from exceptions import RuntimeSessionBusyError
-from runtime.config_builder import runtime_config_digest
+from runtime.config_builder import runtime_camera_keys, runtime_identity_digest
 from runtime.contract import ErrorEvent, LifecycleData, LifecycleEvent, SetFollowerSourceCommand
 from runtime.session import RuntimeSession
 from runtime.transport.lock import SessionNameLock, live_session_pid
@@ -38,12 +38,17 @@ def _watch_subscribers(
     idle_timeout_s: float,
     stop: threading.Event,
 ) -> None:
-    """Force hold when the last subscriber leaves, then idle-exit.
+    """Hold the arm and commit the recording when the last subscriber leaves, then idle-exit.
 
     Started only after wait_for_client() returned, so a subscriber has already
     matched at least once. Losing every subscriber is the worst abandonment
     state — an arm following a leader with nobody watching — so the session
     latches a target before the countdown starts.
+
+    The recording is finalized at the same moment rather than at process exit.
+    The process itself stays alive for the idle window so a returning client
+    keeps the hardware connection, but the dataset must not wait that long: the
+    user navigates straight back to the dataset page expecting their episodes.
     """
     subscribers_present = True
     idle_since: float | None = None
@@ -60,6 +65,13 @@ def _watch_subscribers(
                 session.apply(SetFollowerSourceCommand(follower_source="hold"))
             except Exception:
                 logger.exception("Failed to switch runtime session to hold after losing subscribers")
+            # Latch the arm first, then commit. Waiting for the idle exit would
+            # leave saved episodes invisible on the dataset page for the whole
+            # countdown, and an abandoned open episode would pause it forever.
+            try:
+                session.finalize_recording()
+            except Exception:
+                logger.exception("Failed to finalize the recording after losing subscribers")
         now = time.monotonic()
         if idle_since is None:
             idle_since = now
@@ -72,9 +84,9 @@ def _watch_subscribers(
             logger.info("Runtime session idle for {}s; shutting down", idle_timeout_s)
             server.emit(LifecycleEvent(data=LifecycleData(event="shutdown", reason="idle_timeout")))
             # Setting stop ends session.run(...), which returns through
-            # session.teardown() in main(). B4 extends that teardown with
-            # RecordingMutation.teardown so an idle exit during recording
-            # still saves the episode.
+            # session.teardown() in main(), releasing the devices. The recording
+            # was already committed when the last subscriber left, so nothing
+            # depends on reaching this point.
             stop.set()
             return
 
@@ -105,10 +117,25 @@ def _error_event(exc: Exception) -> ErrorEvent:
 
 
 def signal_ready() -> None:
-    """Send the successful startup handshake and close stdout permanently."""
+    """Send the startup handshake, then make the closed stdout safe to write to.
+
+    The handshake pipe must close so the parent stops waiting, but a closed
+    ``sys.stdout`` makes every later write raise ``ValueError``. tqdm flushes
+    stdout while building a progress bar, so ``datasets`` crashed
+    ``save_episode()``. The ``/dev/null`` handle covers any library that writes
+    to stdout and is held for the process lifetime, never closed.
+
+    Disabling progress bars is a separate concern: tqdm renders to *stderr*,
+    which is the session's log sink, so leaving them on spams the logs with
+    ``Map: 100%|...`` on every episode.
+    """
+    from datasets.utils import disable_progress_bars
+
     sys.stdout.write("READY\n")
     sys.stdout.flush()
     sys.stdout.close()
+    sys.stdout = open(os.devnull, "w")  # noqa: SIM115
+    disable_progress_bars()
 
 
 def signal_error(exc: Exception, *, phase: str | None = None) -> None:
@@ -212,7 +239,8 @@ def _open_locked_session(
     instance_id = uuid4().hex
     server = RuntimeZenohServer(payload.session_name, instance_id=instance_id)
     server.update_metadata(
-        config_digest=runtime_config_digest(payload.document),
+        identity_digest=runtime_identity_digest(payload.document),
+        camera_keys=runtime_camera_keys(payload.document),
         pid=os.getpid(),
         started_at=time.time(),
         idle_timeout_s=payload.idle_timeout_s,
@@ -224,7 +252,7 @@ def _open_locked_session(
         leader_name=payload.leader_name,
     )
     phase[0] = "endpoint_collision"
-    server.open(session.apply)
+    server.open(session.apply, session.handle_request)
     server.wait_for_client()
     phase[0] = "setup_failed"
     loop.run_until_complete(session.setup())
@@ -268,9 +296,8 @@ def main() -> int:
 
         completed = False
         try:
-            # session.run() returns through session.teardown() below. B4 extends
-            # that teardown with RecordingMutation.teardown so an idle exit
-            # during recording still saves the episode.
+            # session.run() returns through session.teardown() below, which
+            # finalizes any open recording mutation so saved episodes survive.
             session.run(stop)
             completed = True
         except Exception as exc:

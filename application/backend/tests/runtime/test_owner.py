@@ -12,14 +12,15 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from exceptions import BaseException as AppBaseException
 from exceptions import RuntimeSessionBusyError
-from runtime.config_builder import runtime_config_digest
+from runtime.config_builder import runtime_identity_digest
 from runtime.contract import DisconnectCommand, SetFollowerSourceCommand, StateEvent
 from runtime.owner import RuntimeSessionOwner, probe_session_metadata, runtime_session_holder, stop_runtime_session
 from runtime.transport.client import RuntimeSessionClient
 from runtime.transport.ids import runtime_session_name
 from runtime.transport.lock import SessionNameLock, live_session_pid, registered_session_names, session_lock_path
-from tests.runtime.test_session import _document, _document_with_leader
+from tests.runtime.test_session import _document, _document_with_cameras, _document_with_leader
 
 
 def _name() -> str:
@@ -140,6 +141,117 @@ def test_losing_the_spawn_race_attaches_to_the_winner() -> None:
             owner.stop()
 
 
+def test_losing_the_spawn_race_attaches_when_the_winner_has_the_cameras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = _name()
+    document = _document_with_cameras("front")
+    client = MagicMock()
+    owner = RuntimeSessionOwner(
+        client,
+        session_name=name,
+        document=document,
+        follower_name="follower",
+        leader_name=None,
+        idle_timeout_s=30.0,
+    )
+    winner_metadata = {
+        "identity_digest": runtime_identity_digest(document),
+        "camera_keys": ["front"],
+        "pid": 41273,
+        "instance_id": "winner",
+    }
+    client.probe.return_value = None
+    client.probe_with_retry.return_value = winner_metadata
+    contention = AppBaseException(
+        message="lock held",
+        error_code="runtime_session_busy",
+        http_status=http.HTTPStatus.LOCKED,
+        phase="name_lock_contention",
+    )
+    host = MagicMock()
+    host.start.side_effect = contention
+    monkeypatch.setattr("runtime.owner.RuntimeProcessHost", lambda *_args, **_kwargs: host)
+    stop = MagicMock()
+    monkeypatch.setattr("runtime.owner.stop_runtime_session", stop)
+
+    owner.connect()
+
+    stop.assert_not_called()
+    assert owner.spawned is False
+    client.attach.assert_called_once_with(winner_metadata)
+    assert owner.metadata == winner_metadata
+
+
+def test_losing_the_spawn_race_restarts_when_the_winner_lacks_cameras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = _name()
+    document = _document_with_cameras("front")
+    client = MagicMock()
+    owner = RuntimeSessionOwner(
+        client,
+        session_name=name,
+        document=document,
+        follower_name="follower",
+        leader_name=None,
+        idle_timeout_s=30.0,
+    )
+    winner_metadata = {
+        "identity_digest": runtime_identity_digest(document),
+        "camera_keys": [],
+        "pid": 41273,
+        "instance_id": "winner",
+    }
+    spawned_metadata = {
+        "identity_digest": runtime_identity_digest(document),
+        "camera_keys": ["front"],
+        "pid": 41274,
+        "instance_id": "ours",
+    }
+    probe_calls = {"n": 0}
+
+    def probe(*_args: Any, **_kwargs: Any) -> dict[str, Any] | None:
+        probe_calls["n"] += 1
+        if probe_calls["n"] <= 2:
+            return None
+        return spawned_metadata
+
+    client.probe.side_effect = probe
+    client.probe_with_retry.return_value = winner_metadata
+    contention = AppBaseException(
+        message="lock held",
+        error_code="runtime_session_busy",
+        http_status=http.HTTPStatus.LOCKED,
+        phase="name_lock_contention",
+    )
+    hosts: list[MagicMock] = []
+
+    def fake_host(*_args: Any, **_kwargs: Any) -> MagicMock:
+        host = MagicMock()
+        if not hosts:
+            host.start.side_effect = contention
+        else:
+            host.start.return_value = None
+            host.is_alive.return_value = True
+        hosts.append(host)
+        return host
+
+    monkeypatch.setattr("runtime.owner.RuntimeProcessHost", fake_host)
+    stop = MagicMock()
+    monkeypatch.setattr("runtime.owner.stop_runtime_session", stop)
+
+    owner.connect()
+
+    stop.assert_called_once_with(name)
+    assert len(hosts) == 2
+    hosts[1].start.assert_called_once()
+    assert owner.spawned is True
+    client.attach.assert_called_once_with(spawned_metadata)
+    assert owner.metadata == spawned_metadata
+    client.probe_with_retry.assert_called_once()
+
+
 def test_attaching_with_a_different_rig_is_refused() -> None:
     name = _name()
     owner, client = _connect_owner(name, _document(), follower_name="left arm")
@@ -192,7 +304,8 @@ def test_replace_stops_the_existing_session_and_spawns_with_the_new_rig() -> Non
             second_client.wait_until_ready(second_owner, timeout=5)
             assert second_owner.spawned is True
             assert second_owner.metadata["pid"] != original_pid
-            assert second_owner.metadata["config_digest"] == runtime_config_digest(different)
+            assert second_owner.metadata["identity_digest"] == runtime_identity_digest(different)
+            assert second_owner.metadata["camera_keys"] == []
             assert not owner.is_alive()
         finally:
             _stop_session(second_owner, second_client)
@@ -449,3 +562,71 @@ def test_attached_owner_does_not_stop_on_abandon() -> None:
     owner, _client = _owner_with_mock_client()
 
     owner.stop_abandoned_spawn()
+
+
+def test_attaching_with_extra_cameras_is_allowed() -> None:
+    name = _name()
+    running = _document_with_cameras("front", "wrist")
+    owner, client = _connect_owner(name, running)
+    try:
+        subset = _document_with_cameras("front")
+        second_owner, second_client = _connect_owner(name, subset)
+        try:
+            assert second_owner.spawned is False
+            assert second_owner.metadata["pid"] == owner.metadata["pid"]
+            assert second_owner.metadata["camera_keys"] == ["front", "wrist"]
+            assert second_owner.metadata["identity_digest"] == runtime_identity_digest(subset)
+        finally:
+            second_client.close()
+    finally:
+        _stop_session(owner, client)
+
+
+def test_a_client_needing_more_cameras_restarts_the_session() -> None:
+    name = _name()
+    owner, client = _connect_owner(name, _document())
+    original_pid = owner.metadata["pid"]
+    try:
+        needing_cameras = _document_with_cameras("front")
+        second_owner, second_client = _connect_owner(name, needing_cameras)
+        try:
+            assert second_owner.spawned is True
+            assert second_owner.metadata["pid"] != original_pid
+            assert second_owner.metadata["camera_keys"] == ["front"]
+            assert not owner.is_alive()
+            assert live_session_pid(name) == second_owner.metadata["pid"]
+        finally:
+            _stop_session(second_owner, second_client)
+    finally:
+        if owner.is_alive():
+            owner.stop()
+        client.close()
+
+
+def test_a_client_needing_a_different_robot_is_refused_before_the_camera_check() -> None:
+    name = _name()
+    owner, client = _connect_owner(name, _document(), follower_name="left arm")
+    try:
+        different = _document_with_cameras("front", name="other-follower")
+        second_client = RuntimeSessionClient(name)
+        second_client.open()
+        second_owner = RuntimeSessionOwner(
+            second_client,
+            session_name=name,
+            document=different,
+            follower_name="left arm",
+            leader_name=None,
+            idle_timeout_s=30.0,
+        )
+        try:
+            with pytest.raises(RuntimeSessionBusyError) as exc_info:
+                second_owner.connect()
+            assert int(exc_info.value.http_status) == http.HTTPStatus.LOCKED
+            assert not second_owner.spawned
+            assert owner.is_alive()
+            assert live_session_pid(name) == owner.metadata["pid"]
+        finally:
+            second_owner.stop()
+            second_client.close()
+    finally:
+        _stop_session(owner, client)

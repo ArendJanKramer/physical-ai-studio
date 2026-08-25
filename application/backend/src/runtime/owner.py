@@ -12,7 +12,7 @@ from loguru import logger
 
 from exceptions import BaseException as AppBaseException
 from exceptions import RuntimeSessionBusyError
-from runtime.config_builder import runtime_config_digest
+from runtime.config_builder import runtime_camera_keys, runtime_identity_digest
 from runtime.hosts.process_host import RuntimeProcessHost
 from runtime.transport.codec import decode_metadata
 from runtime.transport.ids import metadata_key, runtime_session_name
@@ -207,45 +207,50 @@ class RuntimeSessionOwner:
         if replace:
             stop_runtime_session(self._session_name)
 
-        metadata = None if replace else self._client.probe()
-        if metadata is not None:
-            self._attach_to(metadata)
-            return
+        skip_probe = replace
+        while True:
+            metadata = None if skip_probe else self._client.probe()
+            skip_probe = False
+            if metadata is not None and self._try_attach(metadata):
+                return
 
-        self._host = RuntimeProcessHost(
-            self._session_name,
-            self._document,
-            follower_name=self._follower_name,
-            leader_name=self._leader_name,
-            idle_timeout_s=self._idle_timeout_s,
-        )
-        try:
-            self._host.start()
-        except AppBaseException as exc:
-            self._host = None
-            if getattr(exc, "phase", None) != "name_lock_contention":
-                raise
-            metadata = self._client.probe_with_retry(_RACE_RETRY_TIMEOUT)
-            if metadata is None:
-                raise
-            self._attach_to(metadata)
-            return
+            self._host = RuntimeProcessHost(
+                self._session_name,
+                self._document,
+                follower_name=self._follower_name,
+                leader_name=self._leader_name,
+                idle_timeout_s=self._idle_timeout_s,
+            )
+            try:
+                self._host.start()
+            except AppBaseException as exc:
+                self._host = None
+                if getattr(exc, "phase", None) != "name_lock_contention":
+                    raise
+                # The winner may not have published metadata yet.
+                metadata = self._client.probe_with_retry(_RACE_RETRY_TIMEOUT)
+                if metadata is None:
+                    raise
+                if self._try_attach(metadata):
+                    return
+                continue
 
-        self._spawned = True
-        try:
-            metadata = self._wait_for_spawned_metadata(_RACE_RETRY_TIMEOUT)
-            if metadata is None:
-                raise AppBaseException(
-                    message=f"Runtime session {self._session_name} reported READY but its metadata is unreachable.",
-                    error_code="robot_connection_failed",
-                    http_status=500,
-                )
-            self._attach_to(metadata)
-        except Exception:
-            self.stop()
-            self._host = None
-            self._spawned = False
-            raise
+            self._spawned = True
+            try:
+                metadata = self._wait_for_spawned_metadata(_RACE_RETRY_TIMEOUT)
+                if metadata is None:
+                    raise AppBaseException(
+                        message=f"Runtime session {self._session_name} reported READY but its metadata is unreachable.",
+                        error_code="robot_connection_failed",
+                        http_status=500,
+                    )
+                self._attach_to(metadata)
+            except Exception:
+                self.stop()
+                self._host = None
+                self._spawned = False
+                raise
+            return
 
     def _wait_for_spawned_metadata(self, timeout: float) -> dict[str, Any] | None:
         deadline = time.monotonic() + timeout
@@ -266,18 +271,50 @@ class RuntimeSessionOwner:
                 return metadata
             time.sleep(min(0.05, remaining))
 
+    def _try_attach(self, metadata: dict[str, Any]) -> bool:
+        """Attach to ``metadata`` if it can serve this client.
+
+        Returns True after attaching. Returns False after stopping a session
+        that matches identity but lacks cameras this client needs, so the
+        caller can spawn. Raises RuntimeSessionBusyError on an identity mismatch.
+
+        Identity is checked first: a client asking for a different arm must get
+        423, not a silent takeover because it also happens to need more cameras.
+        """
+        self._reject_if_different_rig(metadata)
+        if self._needs_more_cameras(metadata):
+            logger.info(
+                "Runtime session {} is missing cameras this client needs; restarting",
+                self._session_name,
+            )
+            stop_runtime_session(self._session_name)
+            return False
+        self._attach_to(metadata)
+        return True
+
     def _attach_to(self, metadata: dict[str, Any]) -> None:
         self._reject_if_different_rig(metadata)
         self._client.attach(metadata)
         self._metadata = metadata
 
     def _reject_if_different_rig(self, metadata: dict[str, Any]) -> None:
-        expected = runtime_config_digest(self._document)
-        actual = metadata.get("config_digest")
-        if actual == expected:
+        expected = runtime_identity_digest(self._document)
+        if metadata.get("identity_digest") == expected:
             return
         pid = metadata.get("pid")
         raise RuntimeSessionBusyError(
             robot_name=self._follower_name,
             pid=pid if isinstance(pid, int) else None,
         )
+
+    def _needs_more_cameras(self, metadata: dict[str, Any]) -> bool:
+        """Whether the running session lacks a camera this client needs.
+
+        Cameras are outside the session identity, so a session started by a client
+        that needed none — the environment form preview — is a valid attach target
+        for its own identity but cannot serve a client that has to read frames.
+        Restarting is correct rather than rude: the displaced client reattaches to
+        the superset, because its identity still matches.
+        """
+        running = set(metadata.get("camera_keys") or [])
+        return not set(runtime_camera_keys(self._document)).issubset(running)

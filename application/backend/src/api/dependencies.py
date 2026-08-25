@@ -23,6 +23,7 @@ from services import (
     RemoteTrainerService,
     RobotService,
 )
+from services.camera_claims import CameraClaimRegistry
 from services.dataset_import.service import DatasetImportService
 from services.environment_service import EnvironmentService
 from services.event_processor import EventProcessor
@@ -34,7 +35,6 @@ from services.snapshot_service import SnapshotService
 from services.system_service import SystemService
 from settings import Settings, get_settings
 from utils.serial_robot_tools import RobotConnectionManager
-from workers.model_worker_registry import ModelWorkerRegistry
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 AsyncSessionDep = Annotated[AsyncSession, Depends(get_async_db_session)]
@@ -319,23 +319,12 @@ def get_event_processor_ws(request: HTTPConnection) -> EventProcessor:
 EventProcessorDep = Annotated[EventProcessor, Depends(get_event_processor_ws)]
 
 
-def get_recording_locked_camera_fingerprints(request: HTTPConnection) -> set[str]:
-    """Set of camera fingerprints locked by an active recording session."""
-    locked = getattr(request.app.state, "recording_locked_camera_fingerprints", None)
-    if locked is None:
-        raise RuntimeError("Recording lock state not initialized")
-    return cast("set[str]", locked)
-
-
-RecordingLockedCamerasDep = Annotated[set[str], Depends(get_recording_locked_camera_fingerprints)]
-
-
-def get_model_registry(request: HTTPConnection) -> ModelWorkerRegistry:
-    """Dependency to get model worker registry."""
-    registry = getattr(request.app.state, "model_registry", None)
+def get_camera_claim_registry(request: HTTPConnection) -> CameraClaimRegistry:
+    """Return the process-local camera claim registry."""
+    registry = getattr(request.app.state, "camera_claim_registry", None)
     if registry is None:
-        raise RuntimeError("Model worker registry not initialized")
-    return cast("ModelWorkerRegistry", registry)
+        raise RuntimeError("Camera claim registry is not initialized")
+    return cast("CameraClaimRegistry", registry)
 
 
-ModelRegistryDep = Annotated[ModelWorkerRegistry, Depends(get_model_registry)]
+CameraClaimRegistryDep = Annotated[CameraClaimRegistry, Depends(get_camera_claim_registry)]

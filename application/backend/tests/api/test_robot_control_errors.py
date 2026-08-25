@@ -3,9 +3,19 @@ from unittest.mock import MagicMock, call
 
 from fastapi.websockets import WebSocketDisconnect
 
-from api.robot_control import _websocket_error_payload, handle_incoming, start_runtime_session
+from api.runtime_ws import _websocket_error_payload, handle_incoming, start_runtime_session
 from exceptions import RobotDeviceAlreadyOwnedError
-from runtime.contract import DisconnectCommand, SetFollowerSourceCommand
+from runtime.contract import (
+    AckData,
+    AckEvent,
+    DisconnectCommand,
+    LoadDatasetCommand,
+    LoadModelCommand,
+    SaveEpisodeCommand,
+    SetFollowerSourceCommand,
+    StartRecordingCommand,
+    StartTaskCommand,
+)
 
 
 def test_websocket_error_payload_from_app_exception():
@@ -85,6 +95,71 @@ def test_handle_incoming_applies_an_explicit_disconnect() -> None:
     asyncio.run(handle_incoming(websocket, session))
 
     session.apply.assert_called_once_with(DisconnectCommand())
+
+
+def test_handle_incoming_applies_load_model_and_start_task() -> None:
+    session = MagicMock()
+    model_id = "c3f3f886-8813-4b3b-ba48-165cdaa39995"
+    websocket = FakeWebSocket(
+        [
+            {
+                "event": "load_model",
+                "request_id": "req-1",
+                "data": {
+                    "model_id": model_id,
+                    "inference_device": {"backend": "torch", "device": "cpu"},
+                },
+            },
+            {"event": "start_task", "data": {"task": "pick up the cube"}},
+        ]
+    )
+
+    asyncio.run(handle_incoming(websocket, session))
+
+    assert session.apply.call_count == 2
+    load = session.apply.call_args_list[0].args[0]
+    start = session.apply.call_args_list[1].args[0]
+    assert isinstance(load, LoadModelCommand)
+    assert str(load.model_id) == model_id
+    assert load.request_id == "req-1"
+    assert isinstance(start, StartTaskCommand)
+    assert start.task == "pick up the cube"
+
+
+def test_handle_incoming_applies_load_dataset_and_start_recording() -> None:
+    session = MagicMock()
+    dataset_id = "a3f3f886-8813-4b3b-ba48-165cdaa39995"
+    websocket = FakeWebSocket(
+        [
+            {"event": "load_dataset", "data": {"dataset_id": dataset_id}},
+            {"event": "start_recording", "data": {"task": "pick"}},
+        ]
+    )
+
+    asyncio.run(handle_incoming(websocket, session))
+
+    load = session.apply.call_args_list[0].args[0]
+    start = session.apply.call_args_list[1].args[0]
+    assert isinstance(load, LoadDatasetCommand)
+    assert str(load.dataset_id) == dataset_id
+    assert isinstance(start, StartRecordingCommand)
+    assert start.task == "pick"
+
+
+def test_handle_incoming_requests_save_episode_and_delivers_the_ack() -> None:
+    session = MagicMock()
+    session.request.return_value = AckEvent(data=AckData(request_id="req-9", ok=True))
+    websocket = FakeWebSocket(
+        [{"event": "save_episode", "request_id": "req-9", "data": {}}],
+    )
+
+    asyncio.run(handle_incoming(websocket, session))
+
+    command = session.request.call_args.args[0]
+    assert isinstance(command, SaveEpisodeCommand)
+    assert command.request_id == "req-9"
+    session.deliver.assert_called_once_with(session.request.return_value)
+    session.apply.assert_not_called()
 
 
 def test_start_runtime_session_keeps_process_failure_checks() -> None:

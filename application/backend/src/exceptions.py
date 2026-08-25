@@ -229,6 +229,28 @@ class RecordingLockError(BaseException):
         )
 
 
+class CameraSettingsConflictError(BaseException):
+    """Raised when a session asks for camera settings that another project has pinned."""
+
+    def __init__(
+        self,
+        *,
+        project_name: str,
+        pinned: tuple[int, int, int],
+        requested: tuple[int, int, int],
+    ) -> None:
+        width, height, fps = pinned
+        req_width, req_height, req_fps = requested
+        super().__init__(
+            message=(
+                f"Camera is already in use by project {project_name!r} at {width}x{height}@{fps}. "
+                f"This session requested {req_width}x{req_height}@{req_fps}."
+            ),
+            error_code="camera_settings_conflict",
+            http_status=http.HTTPStatus.LOCKED,
+        )
+
+
 class RuntimeSessionBusyError(BaseException):
     """Raised when a live runtime session already holds the robot being asked for."""
 
@@ -301,6 +323,32 @@ class RobotProtocolMismatchError(BaseException):
             error_code="robot_protocol_mismatch",
             http_status=http.HTTPStatus.CONFLICT,
         )
+
+
+class ModelCameraMismatchError(BaseException):
+    """Raised when a model's image inputs do not match the session's cameras."""
+
+    def __init__(self, *, expected: list[str], provided: list[str]) -> None:
+        expected_text = _format_camera_keys(expected)
+        provided_text = _format_camera_keys(provided)
+        message = (
+            f"This model expects camera inputs {expected_text}, but this environment "
+            f"provides {provided_text}. Cameras were probably renamed after the model "
+            "was trained. Rename them back, or retrain."
+        )
+        super().__init__(
+            message=message,
+            error_code="model_camera_mismatch",
+            http_status=http.HTTPStatus.CONFLICT,
+        )
+        self.expected = expected
+        self.provided = provided
+
+
+def _format_camera_keys(keys: list[str]) -> str:
+    if not keys:
+        return "none"
+    return ", ".join(f"`{key}`" for key in keys)
 
 
 class SharedRobotTransportError(BaseException):
