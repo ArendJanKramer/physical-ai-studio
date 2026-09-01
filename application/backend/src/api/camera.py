@@ -38,7 +38,7 @@ def _query_formats(driver: str, fingerprint: str) -> list[SupportedCameraFormat]
         return _formats_to_response([(640, 480, 30), (768, 480, 30), (1920, 1200, 30)])
 
     try:
-        f = json.loads(fingerprint)
+        deserialized_fingerprint = json.loads(fingerprint)
     except json.JSONDecodeError as e:
         msg = f"Unable to parse fingerprint into a dictionary: {e}"
         raise ValueError(msg)
@@ -46,12 +46,12 @@ def _query_formats(driver: str, fingerprint: str) -> list[SupportedCameraFormat]
     if driver == "usb_camera":
         from physicalai.capture import UVCCamera
 
-        return _formats_to_response(UVCCamera.query_formats(f))
+        return _formats_to_response(UVCCamera.query_formats(deserialized_fingerprint))
 
     if driver == "realsense":
         from physicalai.capture.cameras.realsense import RealSenseCamera
 
-        return _formats_to_response(RealSenseCamera.query_formats(f))
+        return _formats_to_response(RealSenseCamera.query_formats(deserialized_fingerprint))
 
     msg = f"Format discovery not supported for driver {driver!r}"
     raise ValueError(msg)
