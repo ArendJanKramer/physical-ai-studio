@@ -19,19 +19,23 @@ export const fingerprintKey = (fingerprint: CameraFingerprint | null | undefined
 
 export const formatFingerprint = (fingerprint: CameraFingerprint | null | undefined): string => {
     if (!fingerprint) return 'Camera needs reselection';
-    const serial = fingerprint.serial;
-    if (typeof serial === 'string' && serial) return serial;
+    const bus = typeof fingerprint.bus === 'string' && fingerprint.bus ? fingerprint.bus : null;
+    const sensor = typeof fingerprint.sensor === 'string' && fingerprint.sensor ? fingerprint.sensor : null;
+    const serial = typeof fingerprint.serial === 'string' && fingerprint.serial ? fingerprint.serial : null;
+    const url = typeof fingerprint.url === 'string' && fingerprint.url ? fingerprint.url : null;
+    const index = typeof fingerprint.index === 'number' ? fingerprint.index : null;
 
-    const url = fingerprint.url;
-    if (typeof url === 'string' && url) return url;
+    const serial_bus = bus && serial ? `${serial} @ ${bus}` : serial;
+    if (serial_bus) return serial_bus;
 
-    const bus_sensor = `${fingerprint.bus} - ${fingerprint.sensor}`;
-    const index = fingerprint.index;
-    if (typeof bus_sensor === 'string' && bus_sensor.includes('v4l2loopback')) {
-        return typeof index === 'number' ? `Virtual camera ${index}` : 'Virtual camera';
+    if (url) return url;
+
+    const bus_sensor = bus && sensor ? `${bus} - ${sensor}` : bus;
+    if (bus_sensor?.includes('v4l2loopback')) {
+        return index !== null ? `Virtual camera ${index}` : 'Virtual camera';
     }
-    if (typeof bus_sensor === 'string' && bus_sensor) return bus_sensor;
-    if (typeof index === 'number') return `Camera ${index}`;
+    if (bus_sensor) return bus_sensor;
+    if (index !== null) return `Camera ${index}`;
 
     return fingerprintKey(fingerprint) ?? 'Camera needs reselection';
 };

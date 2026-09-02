@@ -28,6 +28,7 @@ class BaseCamera(BaseIDModel, ABC):
     )
     hardware_name: str | None = Field(..., description="Camera hardware name from discovery")
 
+
 # ============================================================================
 # Payload Models (Configuration Only)
 # ============================================================================
