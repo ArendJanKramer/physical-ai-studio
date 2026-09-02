@@ -25,12 +25,12 @@ export const formatFingerprint = (fingerprint: CameraFingerprint | null | undefi
     const url = fingerprint.url;
     if (typeof url === 'string' && url) return url;
 
-    const bus = fingerprint.bus;
+    const bus_sensor = `${fingerprint.bus} - ${fingerprint.sensor}`;
     const index = fingerprint.index;
-    if (typeof bus === 'string' && bus.includes('v4l2loopback')) {
+    if (typeof bus_sensor === 'string' && bus_sensor.includes('v4l2loopback')) {
         return typeof index === 'number' ? `Virtual camera ${index}` : 'Virtual camera';
     }
-    if (typeof bus === 'string' && bus) return bus;
+    if (typeof bus_sensor === 'string' && bus_sensor) return bus_sensor;
     if (typeof index === 'number') return `Camera ${index}`;
 
     return fingerprintKey(fingerprint) ?? 'Camera needs reselection';
